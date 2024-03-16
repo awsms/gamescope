@@ -793,7 +793,7 @@ int main(int argc, char **argv)
 				opt_name = gamescope_options[opt_index].name;
 				if (strcmp(opt_name, "help") == 0) {
 					gamescope::PrintVersion();
-					fprintf(stderr, "%s", usage);
+					fprintf(stdout, "%s", usage);
 					return 0;
 				} else if (strcmp(opt_name, "version") == 0) {
 					gamescope::PrintVersion();
