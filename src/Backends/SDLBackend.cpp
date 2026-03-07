@@ -584,6 +584,7 @@ namespace gamescope
 			m_eSDLInit.notify_all();
 			return;
 		}
+		defer( SDL_Quit() );
 
 		if ( SDL_Vulkan_LoadLibrary( nullptr ) != 0 )
 		{
