@@ -133,6 +133,12 @@ namespace gamescope
 	{
 	public:
 		CSDLBackend();
+		virtual ~CSDLBackend()
+		{
+			SDL_Event ev = { .type = SDL_QUIT };
+			SDL_PushEvent( &ev );
+			m_SDLThread.join();
+		}
 
 		/////////////
 		// IBackend
@@ -575,6 +581,7 @@ namespace gamescope
 			m_eSDLInit.notify_all();
 			return;
 		}
+		defer( SDL_Quit() );
 
 		if ( SDL_Vulkan_LoadLibrary( nullptr ) != 0 )
 		{
@@ -646,6 +653,9 @@ namespace gamescope
 		while( SDL_WaitEvent( &event ) )
 		{
 			fake_timestamp++;
+
+			if ( event.type == SDL_QUIT )
+				return;
 
 			switch( event.type )
 			{
