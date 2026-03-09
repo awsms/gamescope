@@ -962,7 +962,7 @@ namespace gamescope
         else
         {
             m_bSawReleaseWithoutAcquire = true;
-            xdg_log.errorf( "Compositor released us but we were not acquired. Oh no." );
+            // xdg_log.errorf( "Compositor released us but we were not acquired. Oh no." );
         }
     }
 
