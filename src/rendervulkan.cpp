@@ -57,6 +57,13 @@
 
 extern bool g_bWasPartialComposite;
 extern bool g_bAllowDeferredBackend;
+extern bool env_to_bool(const char *env);
+
+static bool use_vulkan_present_wait()
+{
+	static const bool s_bUsePresentWait = !env_to_bool( getenv( "GAMESCOPE_DISABLE_VK_PRESENT_WAIT" ) );
+	return s_bUsePresentWait;
+}
 
 static constexpr mat3x4 g_rgb2yuv_srgb_to_bt601_limited = {{
   { 0.257f, 0.504f, 0.098f, 0.0625f },
@@ -325,8 +332,6 @@ bool CVulkanDevice::BInit(VkInstance instance, VkSurfaceKHR surface)
 	return true;
 }
 
-extern bool env_to_bool(const char *env);
-
 bool CVulkanDevice::selectPhysDev(VkSurfaceKHR surface)
 {
 	uint32_t deviceCount = 0;
@@ -561,8 +566,11 @@ bool CVulkanDevice::createDevice()
 		enabledExtensions.push_back( VK_KHR_SWAPCHAIN_EXTENSION_NAME );
 		enabledExtensions.push_back( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME );
 
-		enabledExtensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
-		enabledExtensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
+		if ( use_vulkan_present_wait() )
+		{
+			enabledExtensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
+			enabledExtensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
+		}
 	}
 
 	if ( m_bSupportsModifiers )
@@ -602,9 +610,17 @@ bool CVulkanDevice::createDevice()
 		.dynamicRendering = VK_TRUE,
 	};
 
+	VkPhysicalDeviceFeatures2 features2 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		.pNext = &features13,
+		.features = {
+			.shaderInt16 = m_bSupportsFp16,
+		},
+	};
+
 	VkPhysicalDevicePresentWaitFeaturesKHR presentWaitFeatures = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
-		.pNext = &features13,
+		.pNext = features2.pNext,
 		.presentWait = VK_TRUE,
 	};
 
@@ -614,13 +630,8 @@ bool CVulkanDevice::createDevice()
 		.presentId = VK_TRUE,
 	};
 
-	VkPhysicalDeviceFeatures2 features2 = {
-		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-		.pNext = &presentIdFeatures,
-		.features = {
-			.shaderInt16 = m_bSupportsFp16,
-		},
-	};
+	if ( use_vulkan_present_wait() )
+		features2.pNext = &presentIdFeatures;
 
 	VkDeviceCreateInfo deviceCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -2995,24 +3006,30 @@ void vulkan_present_to_window( void )
 	}
 
 
+	VkPresentInfoKHR presentInfo = {
+		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+		.pNext = nullptr,
+		.swapchainCount = 1,
+		.pSwapchains = &g_output.swapChain,
+		.pImageIndices = &g_output.nOutImage,
+	};
+
 	VkPresentIdKHR presentIdInfo = {
 		.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
 		.swapchainCount = 1,
 		.pPresentIds = &presentId,
 	};
 
-	VkPresentInfoKHR presentInfo = {
-		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-		.pNext = &presentIdInfo,
-		.swapchainCount = 1,
-		.pSwapchains = &g_output.swapChain,
-		.pImageIndices = &g_output.nOutImage,
-	};
+	if ( use_vulkan_present_wait() )
+		presentInfo.pNext = &presentIdInfo;
 
 	if ( g_device.vk.QueuePresentKHR( g_device.queue(), &presentInfo ) == VK_SUCCESS )
 	{
-		g_currentPresentWaitId = presentId;
-		g_currentPresentWaitId.notify_all();
+		if ( use_vulkan_present_wait() )
+		{
+			g_currentPresentWaitId = presentId;
+			g_currentPresentWaitId.notify_all();
+		}
 	}
 	else
 		vulkan_remake_swapchain();
@@ -3534,7 +3551,7 @@ bool vulkan_init( VkInstance instance, VkSurfaceKHR surface )
 	if (!init_nis_data())
 		return false;
 
-	if ( GetBackend()->UsesVulkanSwapchain() )
+	if ( GetBackend()->UsesVulkanSwapchain() && use_vulkan_present_wait() )
 	{
 		std::thread present_wait_thread( present_wait_thread_func );
 		present_wait_thread.detach();

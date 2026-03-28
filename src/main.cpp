@@ -46,6 +46,7 @@ using namespace std::literals;
 EStreamColorspace g_ForcedNV12ColorSpace = k_EStreamColorspace_Unknown;
 extern gamescope::ConVar<bool> cv_adaptive_sync;
 extern gamescope::ConVar<bool> cv_shutdown_on_primary_child_death;
+extern bool env_to_bool(const char *env);
 
 const char *gamescope_optstring = nullptr;
 const char *g_pOriginalDisplay = nullptr;
@@ -894,10 +895,10 @@ int main(int argc, char **argv)
 	{
         if (CheckWaylandPresentationTime())
         {
-            // Default to SDL_VIDEODRIVER wayland under Wayland and force enable vk_khr_present_wait
-            // (not enabled by default in Mesa because instance does not know if Wayland
-            //  compositor supports wp_presentation, but we can check that ourselves.)
-            setenv("vk_khr_present_wait", "true", 0);
+            // Default to SDL_VIDEODRIVER=wayland under Wayland. Allow opt-out of
+            // vk_khr_present_wait for investigation of nested Wayland CPU spins.
+            if ( !env_to_bool( getenv( "GAMESCOPE_DISABLE_VK_PRESENT_WAIT" ) ) )
+                setenv("vk_khr_present_wait", "true", 0);
             setenv("SDL_VIDEODRIVER", "wayland", 0);
         }
         else
