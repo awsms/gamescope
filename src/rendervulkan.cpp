@@ -2859,7 +2859,7 @@ bool vulkan_init_format(VkFormat format, uint32_t drmFormat)
 			// The deferred backend exposes all sample-able formats as supported modifiers.
 			if ( !g_bAllowDeferredBackend )
 			{
-				if ( GetBackend()->UsesModifiers() && !gamescope::Algorithm::Contains( GetBackend()->GetSupportedModifiers( drmFormat ), modifier ) )
+				if ( GetBackend()->ShouldFilterClientTextureModifiers() && !gamescope::Algorithm::Contains( GetBackend()->GetSupportedModifiers( drmFormat ), modifier ) )
 					continue;
 			}
 

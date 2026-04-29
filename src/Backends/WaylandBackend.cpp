@@ -11,6 +11,7 @@
 #include "waitable.h"
 #include "Utils/TempFiles.h"
 
+#include <cinttypes>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -657,6 +658,7 @@ namespace gamescope
         virtual OwningRc<IBackendFb> ImportDmabufToBackend( wlr_dmabuf_attributes *pDmaBuf ) override;
         virtual bool UsesModifiers() const override;
         virtual std::span<const uint64_t> GetSupportedModifiers( uint32_t uDrmFormat ) const override;
+        virtual bool ShouldFilterClientTextureModifiers() const override;
 
         virtual IBackendConnector *GetCurrentConnector() override;
         virtual IBackendConnector *GetConnector( GamescopeScreenType eScreenType ) override;
@@ -1633,7 +1635,9 @@ namespace gamescope
 
     void CWaylandPlane::Present( const FrameInfo_t::Layer_t *pLayer )
     {
-        CWaylandFb *pWaylandFb = pLayer && pLayer->tex != nullptr ? static_cast<CWaylandFb*>( pLayer->tex->GetBackendFb()->EnsureImported() ) : nullptr;
+        CWaylandFb *pWaylandFb = nullptr;
+        if ( pLayer && pLayer->tex && pLayer->tex->GetBackendFb() )
+            pWaylandFb = static_cast<CWaylandFb*>( pLayer->tex->GetBackendFb()->EnsureImported() );
         wl_buffer *pBuffer = pWaylandFb ? pWaylandFb->GetHostBuffer() : nullptr;
 
         if ( pBuffer )
@@ -2212,12 +2216,34 @@ namespace gamescope
 
     OwningRc<IBackendFb> CWaylandBackend::ImportDmabufToBackend( wlr_dmabuf_attributes *pDmaBuf )
     {
+        struct ImportState
+        {
+            wl_buffer *pBuffer = nullptr;
+            bool bDone = false;
+        };
+
+        static constexpr zwp_linux_buffer_params_v1_listener s_BufferParamsListener =
+        {
+            .created = []( void *pData, zwp_linux_buffer_params_v1 *, wl_buffer *pBuffer )
+            {
+                ImportState *pState = static_cast<ImportState *>( pData );
+                pState->pBuffer = pBuffer;
+                pState->bDone = true;
+            },
+            .failed = []( void *pData, zwp_linux_buffer_params_v1 * )
+            {
+                ImportState *pState = static_cast<ImportState *>( pData );
+                pState->bDone = true;
+            },
+        };
+
         zwp_linux_buffer_params_v1 *pBufferParams = zwp_linux_dmabuf_v1_create_params( m_pLinuxDmabuf );
         if ( !pBufferParams )
         {
             xdg_log.errorf( "Failed to create imported dmabuf params" );
             return nullptr;
         }
+        defer( zwp_linux_buffer_params_v1_destroy( pBufferParams ) );
 
         for ( int i = 0; i < pDmaBuf->n_planes; i++ )
         {
@@ -2231,22 +2257,33 @@ namespace gamescope
                 pDmaBuf->modifier & 0xffffffff);
         }
 
-        wl_buffer *pImportedBuffer = zwp_linux_buffer_params_v1_create_immed(
+        ImportState importState;
+        zwp_linux_buffer_params_v1_add_listener( pBufferParams, &s_BufferParamsListener, &importState );
+
+        zwp_linux_buffer_params_v1_create(
             pBufferParams,
             pDmaBuf->width,
             pDmaBuf->height,
             pDmaBuf->format,
             0u );
 
-        if ( !pImportedBuffer )
+        while ( !importState.bDone )
         {
-            xdg_log.errorf( "Failed to import dmabuf" );
+            if ( wl_display_roundtrip( m_pDisplay ) < 0 )
+            {
+                xdg_log.errorf( "Failed to roundtrip imported dmabuf params" );
+                return nullptr;
+            }
+        }
+
+        if ( !importState.pBuffer )
+        {
+            xdg_log.errorf( "Failed to import dmabuf: format 0x%" PRIx32 ", modifier 0x%" PRIx64 ", %dx%d",
+                pDmaBuf->format, pDmaBuf->modifier, pDmaBuf->width, pDmaBuf->height );
             return nullptr;
         }
 
-        zwp_linux_buffer_params_v1_destroy( pBufferParams );
-
-        return new CWaylandFb{ this, pImportedBuffer };
+        return new CWaylandFb{ this, importState.pBuffer };
     }
 
     bool CWaylandBackend::UsesModifiers() const
@@ -2263,6 +2300,13 @@ namespace gamescope
             return std::span<const uint64_t>{};
 
         return std::span<const uint64_t>{ iter->second.begin(), iter->second.end() };
+    }
+
+    bool CWaylandBackend::ShouldFilterClientTextureModifiers() const
+    {
+        // Host output import modifiers are not a limit on what gamescope can
+        // sample from nested clients.
+        return false;
     }
 
     IBackendConnector *CWaylandBackend::GetCurrentConnector()

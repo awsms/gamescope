@@ -339,6 +339,10 @@ namespace gamescope
 
         virtual bool UsesModifiers() const = 0;
         virtual std::span<const uint64_t> GetSupportedModifiers( uint32_t uDrmFormat ) const = 0;
+        virtual bool ShouldFilterClientTextureModifiers() const
+        {
+            return UsesModifiers();
+        }
 		inline bool SupportsFormat( uint32_t uDrmFormat ) const
 		{
 			return !this->GetSupportedModifiers( uDrmFormat ).empty();
@@ -502,4 +506,3 @@ inline gamescope::IBackend *GetBackend()
 {
     return gamescope::IBackend::Get();
 }
-
