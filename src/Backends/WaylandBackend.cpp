@@ -123,6 +123,7 @@ namespace gamescope
     gamescope::ConVar<bool> cv_wayland_mouse_warp_without_keyboard_focus( "wayland_mouse_warp_without_keyboard_focus", true, "Should we only forward mouse warps to the app when we have keyboard focus?" );
     gamescope::ConVar<bool> cv_wayland_mouse_relmotion_without_keyboard_focus( "wayland_mouse_relmotion_without_keyboard_focus", false, "Should we only forward mouse relative motion to the app when we have keyboard focus?" );
     gamescope::ConVar<bool> cv_wayland_use_modifiers( "wayland_use_modifiers", true, "Use DMA-BUF modifiers?" );
+    gamescope::ConVar<bool> cv_wayland_shm_fallback( "wayland_shm_fallback", true, "Fall back to wl_shm presentation if the host compositor rejects DMA-BUF imports." );
 
     gamescope::ConVar<float> cv_wayland_hdr10_saturation_scale( "wayland_hdr10_saturation_scale", 1.0, "Saturation scale for HDR10 content by gamut expansion. 1.0 - 1.2 is a good range to play with." );
 
@@ -189,6 +190,19 @@ namespace gamescope
         return nFd;
     }
 
+    static std::optional<wl_shm_format> DRMFormatToShmFormat( uint32_t uDrmFormat )
+    {
+        switch ( uDrmFormat )
+        {
+            case DRM_FORMAT_ARGB8888:
+                return WL_SHM_FORMAT_ARGB8888;
+            case DRM_FORMAT_XRGB8888:
+                return WL_SHM_FORMAT_XRGB8888;
+            default:
+                return std::nullopt;
+        }
+    }
+
     struct WaylandPlaneColorState
     {
         GamescopeAppTextureColorspace eColorspace;
@@ -210,6 +224,7 @@ namespace gamescope
 
         void Present( std::optional<WaylandPlaneState> oState );
         void Present( const FrameInfo_t::Layer_t *pLayer );
+        void PresentShm( const FrameInfo_t::Layer_t *pLayer );
 
         void CommitLibDecor( libdecor_configuration *pConfiguration );
         void Commit();
@@ -458,6 +473,7 @@ namespace gamescope
         virtual void SetIcon( std::shared_ptr<std::vector<uint32_t>> uIconPixels ) override;
         virtual void SetSelection( std::shared_ptr<std::string> szContents, GamescopeSelection eSelection ) override;
     private:
+        bool PresentShmFallback( const FrameInfo_t *pFrameInfo );
 
         friend CWaylandPlane;
 
@@ -472,6 +488,7 @@ namespace gamescope
         CWaylandPlane m_Planes[8];
         bool m_bVisible = true;
         std::atomic<bool> m_bDesiredFullscreenState = { false };
+        gamescope::Rc<CVulkanTexture> m_pShmFallbackTexture;
 
         bool m_bHostCompositorIsCurrentlyVRR = false;
     };
@@ -725,6 +742,8 @@ namespace gamescope
 		wl_region *GetEmptyRegion() const { return m_pEmptyRegion; }
         wl_region *GetFullRegion() const { return m_pFullRegion; }
         CWaylandFb *GetBlackFb() const { return m_BlackFb.get(); }
+        void MarkDmabufImportFailed();
+        bool ShouldUseShmFallback() const { return m_bUseShmFallback; }
 
         void OnConnectorDestroyed( CWaylandConnector *pConnector )
         {
@@ -791,6 +810,7 @@ namespace gamescope
         Rc<CWaylandFb> m_BlackFb;
         OwningRc<CWaylandFb> m_pOwnedBlackFb;
         OwningRc<CVulkanTexture> m_pBlackTexture;
+        bool m_bUseShmFallback = false;
         wp_presentation *m_pPresentation = nullptr;
         frog_color_management_factory_v1 *m_pFrogColorMgmtFactory = nullptr;
         wp_color_manager_v1 *m_pWPColorManager = nullptr;
@@ -1048,6 +1068,62 @@ namespace gamescope
         }
     }
 
+    bool CWaylandConnector::PresentShmFallback( const FrameInfo_t *pFrameInfo )
+    {
+        if ( pFrameInfo->layerCount <= 0 )
+            return false;
+
+        static constexpr uint32_t k_uFallbackDRMFormat = DRM_FORMAT_XRGB8888;
+
+        if ( !m_pShmFallbackTexture ||
+             m_pShmFallbackTexture->width() != uint32_t( g_nOutputWidth ) ||
+             m_pShmFallbackTexture->height() != uint32_t( g_nOutputHeight ) ||
+             m_pShmFallbackTexture->drmFormat() != k_uFallbackDRMFormat )
+        {
+            CVulkanTexture::createFlags flags;
+            flags.bMappable = true;
+            flags.bStorage = true;
+            flags.bTransferDst = true;
+
+            gamescope::Rc<CVulkanTexture> pTexture = new CVulkanTexture();
+            if ( !pTexture->BInit( g_nOutputWidth, g_nOutputHeight, 1u, k_uFallbackDRMFormat, flags ) )
+            {
+                xdg_log.errorf( "Failed to create wl_shm fallback Vulkan texture" );
+                return false;
+            }
+
+            m_pShmFallbackTexture = std::move( pTexture );
+        }
+
+        FrameInfo_t compositeFrame = *pFrameInfo;
+        std::optional oCompositeResult = vulkan_composite( &compositeFrame, nullptr, false, m_pShmFallbackTexture, false );
+        if ( !oCompositeResult )
+        {
+            xdg_log.errorf( "vulkan_composite failed for wl_shm fallback" );
+            return false;
+        }
+
+        vulkan_wait( *oCompositeResult, true );
+
+        FrameInfo_t::Layer_t compositeLayer{};
+        compositeLayer.scale.x = 1.0;
+        compositeLayer.scale.y = 1.0;
+        compositeLayer.opacity = 1.0;
+        compositeLayer.zpos = g_zposBase;
+        compositeLayer.tex = m_pShmFallbackTexture;
+        compositeLayer.applyColorMgmt = false;
+        compositeLayer.filter = GamescopeUpscaleFilter::NEAREST;
+        compositeLayer.ctm = nullptr;
+        compositeLayer.colorspace = pFrameInfo->outputEncodingEOTF == EOTF_PQ ? GAMESCOPE_APP_TEXTURE_COLORSPACE_HDR10_PQ : GAMESCOPE_APP_TEXTURE_COLORSPACE_SRGB;
+
+        m_Planes[0].PresentShm( &compositeLayer );
+
+        for ( int i = 1; i < 8; i++ )
+            m_Planes[i].Present( nullptr );
+
+        return true;
+    }
+
     int CWaylandConnector::Present( const FrameInfo_t *pFrameInfo, bool bAsync )
     {
         UpdateFullscreenState();
@@ -1059,6 +1135,11 @@ namespace gamescope
             uint32_t uCurrentPlane = 0;
             for ( int i = 0; i < 8 && uCurrentPlane < 8; i++ )
                 m_Planes[uCurrentPlane++].Present( nullptr );
+        }
+        else if ( m_pBackend->ShouldUseShmFallback() && pFrameInfo->layerCount > 0 )
+        {
+            if ( !PresentShmFallback( pFrameInfo ) )
+                return -EINVAL;
         }
         else
         {
@@ -1668,6 +1749,73 @@ namespace gamescope
         }
     }
 
+    void CWaylandPlane::PresentShm( const FrameInfo_t::Layer_t *pLayer )
+    {
+        if ( !pLayer || !pLayer->tex || !pLayer->tex->mappedData() || !pLayer->tex->rowPitch() )
+        {
+            Present( std::nullopt );
+            return;
+        }
+
+        std::optional<wl_shm_format> oShmFormat = DRMFormatToShmFormat( pLayer->tex->drmFormat() );
+        if ( !oShmFormat )
+        {
+            xdg_log.errorf( "Cannot present DRM format 0x%" PRIx32 " through wl_shm", pLayer->tex->drmFormat() );
+            Present( std::nullopt );
+            return;
+        }
+
+        const uint32_t uStride = pLayer->tex->rowPitch();
+        const uint32_t uSize = uStride * pLayer->tex->height();
+        int32_t nFd = CreateShmBuffer( uSize, pLayer->tex->mappedData() );
+        if ( nFd < 0 )
+        {
+            xdg_log.errorf( "Failed to create wl_shm fallback buffer" );
+            Present( std::nullopt );
+            return;
+        }
+        defer( close( nFd ) );
+
+        wl_shm_pool *pPool = wl_shm_create_pool( m_pBackend->GetShm(), nFd, uSize );
+        if ( !pPool )
+        {
+            xdg_log.errorf( "Failed to create wl_shm fallback pool" );
+            Present( std::nullopt );
+            return;
+        }
+        defer( wl_shm_pool_destroy( pPool ) );
+
+        wl_buffer *pBuffer = wl_shm_pool_create_buffer(
+            pPool, 0, pLayer->tex->width(), pLayer->tex->height(), uStride, *oShmFormat );
+        if ( !pBuffer )
+        {
+            xdg_log.errorf( "Failed to create wl_shm fallback wl_buffer" );
+            Present( std::nullopt );
+            return;
+        }
+
+        OwningRc<CWaylandFb> pWaylandFb = new CWaylandFb{ m_pBackend, pBuffer };
+        pWaylandFb->OnCompositorAcquire();
+
+        Present(
+            ClipPlane( WaylandPlaneState
+            {
+                .pBuffer     = pBuffer,
+                .nDestX      = int32_t( -pLayer->offset.x ),
+                .nDestY      = int32_t( -pLayer->offset.y ),
+                .flSrcX      = 0.0,
+                .flSrcY      = 0.0,
+                .flSrcWidth  = double( pLayer->tex->width() ),
+                .flSrcHeight = double( pLayer->tex->height() ),
+                .nDstWidth   = int32_t( ceil( pLayer->tex->width() / double( pLayer->scale.x ) ) ),
+                .nDstHeight  = int32_t( ceil( pLayer->tex->height() / double( pLayer->scale.y ) ) ),
+                .eColorspace = pLayer->colorspace,
+                .pHDRMetadata = pLayer->hdr_metadata_blob,
+                .bOpaque     = pLayer->zpos == g_zposBase,
+                .uFractionalScale = GetScale(),
+            } ) );
+    }
+
     void CWaylandPlane::UpdateVRRRefreshRate()
     {
         if ( m_pParent )
@@ -2127,6 +2275,15 @@ namespace gamescope
         return true;
     }
 
+    void CWaylandBackend::MarkDmabufImportFailed()
+    {
+        if ( !cv_wayland_shm_fallback || m_bUseShmFallback )
+            return;
+
+        xdg_log.warnf( "Host compositor rejected a DMA-BUF import; falling back to wl_shm presentation." );
+        m_bUseShmFallback = true;
+    }
+
     std::span<const char *const> CWaylandBackend::GetInstanceExtensions() const
     {
         return std::span<const char *const>{};
@@ -2216,6 +2373,9 @@ namespace gamescope
 
     OwningRc<IBackendFb> CWaylandBackend::ImportDmabufToBackend( wlr_dmabuf_attributes *pDmaBuf )
     {
+        if ( m_bUseShmFallback )
+            return nullptr;
+
         struct ImportState
         {
             wl_buffer *pBuffer = nullptr;
@@ -2278,6 +2438,7 @@ namespace gamescope
 
         if ( !importState.pBuffer )
         {
+            MarkDmabufImportFailed();
             xdg_log.errorf( "Failed to import dmabuf: format 0x%" PRIx32 ", modifier 0x%" PRIx64 ", %dx%d",
                 pDmaBuf->format, pDmaBuf->modifier, pDmaBuf->width, pDmaBuf->height );
             return nullptr;
