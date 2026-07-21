@@ -1784,6 +1784,8 @@ bool wlsession_init( void ) {
 	wlr_log_init(WLR_DEBUG, handle_wlr_log);
 
 	wlserver.display = wl_display_create();
+	// Tolerate transient client backpressure without disconnecting Xwayland.
+	wl_display_set_default_max_buffer_size( wlserver.display, 1024 * 1024 );
 	wlserver.event_loop = wl_display_get_event_loop( wlserver.display );
 	wlserver.wlr.headless_backend = wlr_headless_backend_create( wlserver.event_loop );
 
