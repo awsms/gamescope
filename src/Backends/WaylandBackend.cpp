@@ -5,6 +5,7 @@
 #include "steamcompmgr.hpp"
 #include "edid.h"
 #include "Utils/Defer.h"
+#include "InputLatencyTrace.hpp"
 #include "Utils/Algorithm.h"
 #include "convar.h"
 #include "refresh_rate.h"
@@ -3223,8 +3224,11 @@ namespace gamescope
         }
 
         wlserver_lock();
+        input_latency_trace_record_key( INPUT_LATENCY_T3_WAYLOCK, uKey, bPressed );
         wlserver_key( uKey, bPressed, ++m_uFakeTimestamp );
+        input_latency_trace_record_key( INPUT_LATENCY_T4_NOTIFY, uKey, bPressed );
         wlserver_unlock();
+        input_latency_trace_record_key( INPUT_LATENCY_T5_FLUSH, uKey, bPressed );
     }
 
     // Registry
@@ -3483,6 +3487,8 @@ namespace gamescope
     }
     void CWaylandInputThread::Wayland_Keyboard_Key( wl_keyboard *pKeyboard, uint32_t uSerial, uint32_t uTime, uint32_t uKey, uint32_t uState )
     {
+        input_latency_trace_record_key( INPUT_LATENCY_T2_BACKEND, uKey,
+            uState == WL_KEYBOARD_KEY_STATE_PRESSED );
         if ( !m_bKeyboardEntered )
             return;
 
