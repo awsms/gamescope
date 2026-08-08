@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <csignal>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <poll.h>
 #include <linux/input-event-codes.h>
@@ -3053,6 +3054,7 @@ namespace gamescope
 
     void CWaylandInputThread::ThreadFunc()
     {
+        pthread_setname_np( pthread_self(), "gamescope-wlin" );
         m_bInitted.wait( false );
 
         if ( !m_Waiter.IsRunning() )
