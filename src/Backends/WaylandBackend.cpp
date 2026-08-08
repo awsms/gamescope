@@ -3121,6 +3121,7 @@ namespace gamescope
         int nRet = 0;
         while ( m_Waiter.IsRunning() )
         {
+            input_latency_trace_record_input_cycle( INPUT_LATENCY_D2_DISPATCH );
             if ( ( nRet = wl_display_dispatch_queue_pending( m_pBackend->GetDisplay(), m_pQueue ) ) < 0 )
             {
                 LogDisplayError( "Failed to dispatch input thread queue", m_pBackend->GetDisplay() );
@@ -3149,11 +3150,15 @@ namespace gamescope
                 continue;
             }
 
+            input_latency_trace_record_input_cycle( INPUT_LATENCY_D0_POLL_WAKE );
+
             if ( ( nRet = wl_display_read_events( m_pBackend->GetDisplay() ) ) < 0 )
             {
                 LogDisplayError( "Failed to read events on input thread", m_pBackend->GetDisplay() );
                 abort();
             }
+
+            input_latency_trace_record_input_cycle( INPUT_LATENCY_D1_READ_DONE );
 
             // Reading also queues releases and presentation feedback for steamcompmgr.
             nudge_steamcompmgr();
