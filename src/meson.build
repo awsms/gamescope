@@ -122,6 +122,7 @@ src = [
   'backend.cpp',
   'x11cursor.cpp',
   'InputEmulation.cpp',
+  'InputLatencyTrace.cpp',
   'LibInputHandler.cpp',
 ]
 

@@ -33,6 +33,7 @@
 #include "Utils/Process.h"
 #include "Utils/TempFiles.h"
 #include "Utils/Version.h"
+#include "InputLatencyTrace.hpp"
 
 #include "backends.h"
 #include "refresh_rate.h"
@@ -1096,6 +1097,8 @@ int main(int argc, char **argv)
 	if ( g_bExposeWayland )
 		setenv("WAYLAND_DISPLAY", wlserver_get_wl_display_name(), 1);
 
+	input_latency_trace_init();
+
 #if HAVE_PIPEWIRE
 	if ( !init_pipewire() )
 	{
@@ -1114,6 +1117,7 @@ int main(int argc, char **argv)
 	sigaction(SIGUSR2, &handle_signal_action, nullptr);
 
 	wlserver_run();
+	input_latency_trace_shutdown();
 
 	steamCompMgrThread.join();
 
