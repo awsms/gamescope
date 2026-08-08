@@ -32,6 +32,7 @@ namespace
 	constexpr uint32_t kRoleGamescope = 6u;
 	constexpr uint32_t kEventKey = 1u;
 	constexpr uint32_t kFlagPress = 1u << 1;
+	constexpr uint32_t kTraceStageCount = 17u;
 
 	struct TraceMessage
 	{
@@ -56,9 +57,17 @@ namespace
 	struct PendingKeyTrace
 	{
 		uint64_t sequence;
-		uint64_t timestamps[4];
+		uint64_t timestamps[kTraceStageCount];
 		uint32_t key;
 		uint32_t flags;
+	};
+
+	struct InputCycleTrace
+	{
+		uint64_t sequence;
+		uint64_t pollWake;
+		uint64_t readDone;
+		uint64_t dispatch;
 	};
 
 	std::atomic<int> s_socket{ -1 };
@@ -69,6 +78,8 @@ namespace
 	std::atomic<uint32_t> s_flags{ 0 };
 	std::mutex s_sendMutex;
 	std::thread s_controlThread;
+	thread_local PendingKeyTrace s_pendingKeyTrace{};
+	thread_local InputCycleTrace s_inputCycleTrace{};
 
 	uint32_t GetTid()
 	{
@@ -233,11 +244,40 @@ void input_latency_trace_shutdown()
 	s_sequence.store( 0, std::memory_order_release );
 }
 
+void input_latency_trace_record_input_cycle( InputLatencyTraceStage stage )
+{
+	if ( !s_enabled.load( std::memory_order_acquire ) )
+		return;
+	const uint64_t sequence = s_sequence.load( std::memory_order_acquire );
+	if ( sequence == 0 )
+		return;
+
+	if ( s_inputCycleTrace.sequence != sequence )
+	{
+		s_inputCycleTrace = {};
+		s_inputCycleTrace.sequence = sequence;
+	}
+
+	const uint64_t timestamp = GetTimeNs();
+	switch ( stage )
+	{
+		case INPUT_LATENCY_D0_POLL_WAKE:
+			s_inputCycleTrace.pollWake = timestamp;
+			break;
+		case INPUT_LATENCY_D1_READ_DONE:
+			s_inputCycleTrace.readDone = timestamp;
+			break;
+		case INPUT_LATENCY_D2_DISPATCH:
+			s_inputCycleTrace.dispatch = timestamp;
+			break;
+		default:
+			break;
+	}
+}
+
 void input_latency_trace_record_key( InputLatencyTraceStage stage,
 	uint32_t key, bool pressed )
 {
-	thread_local PendingKeyTrace pending{};
-
 	if ( !pressed || !s_enabled.load( std::memory_order_acquire ) )
 		return;
 	const uint64_t sequence = s_sequence.load( std::memory_order_acquire );
@@ -246,40 +286,59 @@ void input_latency_trace_record_key( InputLatencyTraceStage stage,
 
 	if ( stage == INPUT_LATENCY_T2_BACKEND )
 	{
-		pending = {};
-		pending.sequence = sequence;
-		pending.key = key;
-		pending.flags = s_flags.load( std::memory_order_relaxed ) | kFlagPress;
+		s_pendingKeyTrace = {};
+		s_pendingKeyTrace.sequence = sequence;
+		s_pendingKeyTrace.key = key;
+		s_pendingKeyTrace.flags = s_flags.load( std::memory_order_relaxed ) | kFlagPress;
+		if ( s_inputCycleTrace.sequence == sequence )
+		{
+			s_pendingKeyTrace.timestamps[INPUT_LATENCY_D0_POLL_WAKE] = s_inputCycleTrace.pollWake;
+			s_pendingKeyTrace.timestamps[INPUT_LATENCY_D1_READ_DONE] = s_inputCycleTrace.readDone;
+			s_pendingKeyTrace.timestamps[INPUT_LATENCY_D2_DISPATCH] = s_inputCycleTrace.dispatch;
+		}
 	}
-	else if ( pending.sequence != sequence || pending.key != key )
+	else if ( s_pendingKeyTrace.sequence != sequence || s_pendingKeyTrace.key != key )
 	{
 		return;
 	}
 
-	const uint32_t timestampIndex = uint32_t( stage ) - uint32_t( INPUT_LATENCY_T2_BACKEND );
-	if ( timestampIndex >= 4 )
+	const uint32_t stageIndex = uint32_t( stage );
+	if ( stageIndex >= kTraceStageCount )
 		return;
-	pending.timestamps[timestampIndex] = GetTimeNs();
+	s_pendingKeyTrace.timestamps[stageIndex] = GetTimeNs();
 	if ( stage != INPUT_LATENCY_T5_FLUSH )
 		return;
 
-	for ( uint32_t index = 0; index < 4; index++ )
+	constexpr uint32_t stages[] = {
+		INPUT_LATENCY_T2_BACKEND,
+		INPUT_LATENCY_T3_WAYLOCK,
+		INPUT_LATENCY_T4_NOTIFY,
+		INPUT_LATENCY_T5_FLUSH,
+		INPUT_LATENCY_D0_POLL_WAKE,
+		INPUT_LATENCY_D1_READ_DONE,
+		INPUT_LATENCY_D2_DISPATCH,
+	};
+	for ( uint32_t recordStage : stages )
 	{
-		if ( pending.timestamps[index] == 0 )
+		if ( s_pendingKeyTrace.timestamps[recordStage] == 0 )
 			continue;
 		TraceMessage record = MakeMessage( kMessageRecord );
-		record.stage = uint32_t( INPUT_LATENCY_T2_BACKEND ) + index;
+		record.stage = recordStage;
 		record.eventType = kEventKey;
-		record.sequence = pending.sequence;
-		record.timestampNs = pending.timestamps[index];
-		record.code = int32_t( pending.key );
+		record.sequence = s_pendingKeyTrace.sequence;
+		record.timestampNs = s_pendingKeyTrace.timestamps[recordStage];
+		record.code = int32_t( s_pendingKeyTrace.key );
 		record.value = 1;
-		record.flags = pending.flags;
+		record.flags = s_pendingKeyTrace.flags;
 		if ( !SendMessage( record ) )
 		{
 			s_enabled.store( false, std::memory_order_release );
 			break;
 		}
 	}
-	pending = {};
+	uint64_t completedSequence = sequence;
+	s_sequence.compare_exchange_strong( completedSequence, 0,
+		std::memory_order_acq_rel, std::memory_order_acquire );
+	s_pendingKeyTrace = {};
+	s_inputCycleTrace = {};
 }
