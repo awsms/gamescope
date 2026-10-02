@@ -37,6 +37,29 @@ Install with:
 meson install -C build/ --skip-subprojects
 ```
 
+## Inspecting nested Xwayland windows
+
+`gamescopectl windows` lists every current top-level window on the nested
+Xwayland display, including windows Gamescope is not currently showing.
+`gamescopectl watch-windows` first lists existing windows, then streams their
+create, map, unmap, property-change, and destroy events. Start the watcher
+before the application when short-lived windows matter.
+
+Run the command from inside Gamescope, where `DISPLAY` and
+`GAMESCOPE_WAYLAND_DISPLAY` are set automatically, or pass the nested X display
+explicitly from outside:
+
+```sh
+gamescopectl windows :2
+gamescopectl watch-windows :2
+```
+
+The output is tab-separated: `event`, microseconds since the command started,
+X window ID, mapped state, PID (if published), WM_CLASS, and title. Tabs,
+newlines, and backslashes in text fields are escaped. This covers Xwayland
+windows; it does not enumerate native Wayland surfaces. An event can outlive
+its window, so metadata may be empty for a window destroyed immediately.
+
 ## Keyboard shortcuts
 
 * **Super + F** : Toggle fullscreen
