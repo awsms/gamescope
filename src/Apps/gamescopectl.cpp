@@ -5,6 +5,7 @@
 #include <span>
 #include <optional>
 #include "convar.h"
+#include "WindowInspector.hpp"
 #include "Utils/Version.h"
 
 #include <wayland-client.h>
@@ -244,6 +245,19 @@ namespace gamescope
     {
         console_log.bPrefixEnabled = false;
 
+        if ( argc >= 2 && ( !strcmp( argv[1], "windows" ) || !strcmp( argv[1], "watch-windows" ) ) )
+        {
+            if ( argc > 3 )
+            {
+                fprintf( stderr, "Usage: gamescopectl %s [X_DISPLAY]\n", argv[1] );
+                return 1;
+            }
+            const char *displayName = argc == 3 ? argv[2] : nullptr;
+            if ( !displayName && getenv( "GAMESCOPE_WAYLAND_DISPLAY" ) )
+                displayName = getenv( "DISPLAY" );
+            return RunWindowInspection( argv[1], displayName );
+        }
+
         bool bInfoOnly = argc < 2;
 
         gamescope::GamescopeCtl gamescopeCtl;
@@ -278,6 +292,8 @@ namespace gamescope
             }
             fprintf( stdout, "You can execute any debug command in Gamescope using this tool.\n" );
             fprintf( stdout, "For a list of commands and convars, use 'gamescopectl help'\n" );
+            fprintf( stdout, "Use 'gamescopectl windows [X_DISPLAY]' to list Xwayland windows.\n" );
+            fprintf( stdout, "Use 'gamescopectl watch-windows [X_DISPLAY]' to stream their events.\n" );
             return 0;
         }
 

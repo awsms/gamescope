@@ -234,7 +234,7 @@ executable('gamescope_color_microbench', ['color_bench.cpp', 'color_helpers.cpp'
 
 executable('gamescope_color_tests', ['color_tests.cpp', 'color_helpers.cpp'], gamescope_core_src, gamescope_version, dependencies:[glm_dep, cap_dep])
 
-executable('gamescopectl', ['Apps/gamescopectl.cpp'], gamescope_core_src, gamescope_version, protocols_client_src, dependencies: [dep_wayland, cap_dep], install: true, cpp_args: ['-Werror=switch-enum'])
+executable('gamescopectl', ['Apps/gamescopectl.cpp', 'Apps/WindowInspector.cpp'], gamescope_core_src, gamescope_version, protocols_client_src, dependencies: [dep_wayland, dep_x11, cap_dep], install: true, cpp_args: ['-Werror=switch-enum'])
 
 executable('gamescope-type', ['Apps/gamescope_type.c'], protocols_client_src, dependencies: [dep_wayland, cap_dep], install:true )
 
