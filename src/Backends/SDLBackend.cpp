@@ -24,7 +24,7 @@
 #include "sdlscancodetable.hpp"
 
 static int g_nOldNestedRefresh = 0;
-static bool g_bWindowFocused = true;
+static bool g_bWindowFocused = false;
 
 static int g_nOutputWidthPts = 0;
 static int g_nOutputHeightPts = 0;
@@ -637,11 +637,22 @@ namespace gamescope
 
 		if ( g_bForceRelativeMouse )
 		{
-			SDL_SetRelativeMouseMode( SDL_TRUE );
+			// The window is still hidden here. Apply the grab when the host
+			// compositor actually gives us keyboard focus.
 			m_bApplicationGrabbed = true;
 		}
 
 		SDL_SetHint( SDL_HINT_TOUCH_MOUSE_EVENTS, "0" );
+		const bool bTraceFocus = SDL_getenv( "GAMESCOPE_SDL_FOCUS_TRACE" ) != nullptr;
+		auto traceFocus = [&]( const char *pszEvent )
+		{
+			if ( bTraceFocus )
+				fprintf( stderr, "SDL focus %s: keyboard=%d mouse=%d relative=%d requested=%d\n",
+					pszEvent,
+					SDL_GetKeyboardFocus() == m_Connector.GetSDLWindow(),
+					SDL_GetMouseFocus() == m_Connector.GetSDLWindow(),
+					SDL_GetRelativeMouseMode(), bool( m_bApplicationGrabbed ) );
+		};
 
 		g_nOldNestedRefresh = g_nNestedRefresh;
 
@@ -700,6 +711,8 @@ namespace gamescope
 				case SDL_MOUSEBUTTONDOWN:
 				case SDL_MOUSEBUTTONUP:
 				{
+					if ( event.type == SDL_MOUSEBUTTONDOWN )
+						traceFocus( "button down" );
 					wlserver_lock();
 					wlserver_mousebutton( SDLButtonToLinuxButton( event.button.button ),
 										event.button.state == SDL_PRESSED,
@@ -856,6 +869,8 @@ namespace gamescope
 						case SDL_WINDOWEVENT_MOVED:
 						case SDL_WINDOWEVENT_SHOWN:
 							{
+								if ( event.window.event == SDL_WINDOWEVENT_SHOWN )
+									traceFocus( "shown" );
 								int display_index = 0;
 								SDL_DisplayMode mode = { SDL_PIXELFORMAT_UNKNOWN, 0, 0, 0, 0 };
 
@@ -869,10 +884,25 @@ namespace gamescope
 						case SDL_WINDOWEVENT_FOCUS_LOST:
 							g_nNestedRefresh = g_nNestedUnfocusedRefresh;
 							g_bWindowFocused = false;
+							// Recreate the Wayland relative pointer on the next focus.
+							// SDL can retain the relative-mode flag while the host has
+							// already released its pointer constraint.
+							if ( m_bApplicationGrabbed )
+								SDL_SetRelativeMouseMode( SDL_FALSE );
+							traceFocus( "lost" );
 							break;
 						case SDL_WINDOWEVENT_FOCUS_GAINED:
 							g_nNestedRefresh = g_nOldNestedRefresh;
 							g_bWindowFocused = true;
+							if ( m_bApplicationGrabbed && SDL_SetRelativeMouseMode( SDL_TRUE ) < 0 )
+								fprintf( stderr, "SDL_SetRelativeMouseMode failed on focus: %s\n", SDL_GetError() );
+							traceFocus( "gained" );
+							break;
+						case SDL_WINDOWEVENT_ENTER:
+							traceFocus( "pointer enter" );
+							break;
+						case SDL_WINDOWEVENT_LEAVE:
+							traceFocus( "pointer leave" );
 							break;
 						case SDL_WINDOWEVENT_EXPOSED:
 							force_repaint();
@@ -947,8 +977,12 @@ namespace gamescope
 					}
 					else if ( event.type == GetUserEventIndex( GAMESCOPE_SDL_EVENT_GRAB ) )
 					{
+					// A game can request a grab before the SDL window is shown.
+					// Keep the request and apply it on FOCUS_GAINED.
+					if ( !m_bApplicationGrabbed || g_bWindowFocused )
 						SDL_SetRelativeMouseMode( m_bApplicationGrabbed ? SDL_TRUE : SDL_FALSE );
-					}
+					traceFocus( "grab request" );
+				}
 					else if ( event.type == GetUserEventIndex( GAMESCOPE_SDL_EVENT_CURSOR ) )
 					{
 						std::shared_ptr<INestedHints::CursorInfo> pCursorInfo = m_pApplicationCursor;
